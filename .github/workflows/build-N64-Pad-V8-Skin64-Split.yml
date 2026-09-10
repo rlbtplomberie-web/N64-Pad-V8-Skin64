@@ -1,0 +1,72 @@
+name: Build N64 Pad V8 Skin64 Split
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Récupérer les fichiers
+        uses: actions/checkout@v5
+
+      - name: Installer Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Extraire et vérifier les deux parties
+        run: |
+          part1=$(find . -maxdepth 2 -type f -name 'N64-Pad-V8-Skin64-Part1.zip' -print -quit)
+          part2=$(find . -maxdepth 2 -type f -name 'N64-Pad-V8-Skin64-Part2.zip' -print -quit)
+          if [ -z "$part1" ] || [ -z "$part2" ]; then
+            echo "ERREUR : les fichiers Part1.zip et Part2.zip sont tous les deux obligatoires."
+            exit 1
+          fi
+          mkdir -p package
+          unzip -q "$part1" -d package
+          unzip -q "$part2" -d package
+          marker1=$(find package -type f -name 'SKIN64_PART1' -print -quit)
+          marker2=$(find package -type f -name 'SKIN64_PART2' -print -quit)
+          if [ -z "$marker1" ] || [ -z "$marker2" ]; then
+            echo "ERREUR : contenu des deux ZIP incorrect."
+            exit 1
+          fi
+          echo "PART1_ROOT=$(dirname "$marker1")" >> "$GITHUB_ENV"
+          echo "PART2_ROOT=$(dirname "$marker2")" >> "$GITHUB_ENV"
+
+      - name: Reconstituer l’application fonctionnelle
+        run: |
+          cat "$PART1_ROOT/base/N64-Pad-V8.apk.part0" "$PART2_ROOT/base/N64-Pad-V8.apk.part1" > N64-Pad-V8-Skin64-unsigned.apk
+          expected='bcf78c6c36b132152376e3f16d399ac1e856ae1e2ef6e9611443208ef0e4bbeb'
+          actual=$(sha256sum N64-Pad-V8-Skin64-unsigned.apk | cut -d' ' -f1)
+          if [ "$actual" != "$expected" ]; then
+            echo "ERREUR : l’APK reconstitué est incorrect. Vérifiez que vous avez déposé les deux nouveaux ZIP."
+            exit 1
+          fi
+
+      - name: Remplacer uniquement les images des pads
+        run: |
+          zip -d N64-Pad-V8-Skin64-unsigned.apk 'META-INF/*' || true
+          cd "$PART1_ROOT/replacements"
+          zip -qr "$GITHUB_WORKSPACE/N64-Pad-V8-Skin64-unsigned.apk" .
+
+      - name: Aligner et signer l’APK
+        run: |
+          tools_dir="$ANDROID_SDK_ROOT/build-tools/$(ls -1 "$ANDROID_SDK_ROOT/build-tools" | sort -V | tail -1)"
+          "$tools_dir/zipalign" -p -f 4 N64-Pad-V8-Skin64-unsigned.apk N64-Pad-V8-Skin64-aligned.apk
+          keytool -genkeypair -v -keystore skin64-debug.jks -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Skin64,OU=Android,O=Skin64,L=Paris,C=FR'
+          "$tools_dir/apksigner" sign --ks skin64-debug.jks --ks-pass pass:android --key-pass pass:android --out N64-Pad-V8-Skin64.apk N64-Pad-V8-Skin64-aligned.apk
+          "$tools_dir/apksigner" verify --verbose N64-Pad-V8-Skin64.apk
+
+      - name: Publier l’APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: N64-Pad-V8-Skin64
+          path: N64-Pad-V8-Skin64.apk
+          if-no-files-found: error
